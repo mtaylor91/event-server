@@ -122,6 +122,28 @@ func (m *Manager) GetOrCreateRoom(uuid uuid.UUID) *Room {
 	return room
 }
 
+func (m *Manager) handleDisconnect(client *Client) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	c, ok := m.clients[client.uuid]
+	if !ok {
+		return
+	}
+
+	for _, room := range c.rooms {
+		room.lock.Lock()
+		for i, client := range room.clients {
+			if client.uuid == c.uuid {
+				room.clients = append(
+					room.clients[:i], room.clients[i+1:]...)
+				break
+			}
+		}
+		room.lock.Unlock()
+	}
+}
+
 func (c *Client) handleEnterRoom(event *Event) {
 	room := c.manager.GetOrCreateRoom(event.Room)
 
@@ -222,6 +244,7 @@ func (c *Client) write() {
 	}
 
 	c.conn.Close()
+	c.manager.handleDisconnect(c)
 }
 
 func (m *Manager) healthHandler(w http.ResponseWriter, r *http.Request) {
