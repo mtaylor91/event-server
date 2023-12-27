@@ -245,6 +245,8 @@ func (c *Client) write() {
 
 	c.conn.Close()
 	c.manager.handleDisconnect(c)
+
+	log.Info("Client disconnected: ", c.uuid)
 }
 
 func (m *Manager) healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -282,6 +284,9 @@ func (m *Manager) socketHandler(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 		return
 	}
+
+	// Log that we have a new client
+	log.Info("New client: ", client.uuid)
 
 	// Start listening for messages from the client
 	go client.read()
