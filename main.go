@@ -64,6 +64,7 @@ func NewManager() *Manager {
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
+			CheckOrigin:     func(r *http.Request) bool { return true },
 		},
 	}
 }
@@ -78,6 +79,10 @@ func (m *Manager) NewClient(
 		if !c.key.Equal(clientHello.PublicKey) {
 			return nil, fmt.Errorf("client already exists")
 		} else {
+			c.lock.Lock()
+			defer c.lock.Unlock()
+			c.conn = conn
+			c.send = make(chan []byte, 256)
 			return c, nil
 		}
 	} else {
@@ -254,6 +259,8 @@ func (m *Manager) healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) socketHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info("New connection")
+
 	// Set the response headers
 	w.Header().Set("Cache-Control", "no-cache")
 
@@ -263,6 +270,8 @@ func (m *Manager) socketHandler(w http.ResponseWriter, r *http.Request) {
 		log.Error("Failed to upgrade connection: ", err)
 		return
 	}
+
+	log.Info("Upgraded connection")
 
 	// Read the client hello message
 	_, message, err := conn.ReadMessage()
