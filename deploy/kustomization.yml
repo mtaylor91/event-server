@@ -1,0 +1,5 @@
+commonLabels:
+  app: event-service
+resources:
+- deployment.yml
+- service.yml

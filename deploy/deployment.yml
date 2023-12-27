@@ -1,0 +1,14 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-service
+spec:
+  template:
+    spec:
+      containers:
+      - name: event-server
+        image: images.home.mtaylor.io/event-server
+        ports:
+        - name: http
+          protocol: TCP
+          containerPort: 8080
