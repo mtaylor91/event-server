@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"encoding/binary"
 	"fmt"
 	"net/http"
@@ -37,6 +38,7 @@ type Client struct {
 	manager *Manager
 	lock    sync.RWMutex
 	uuid    uuid.UUID
+	key     ed25519.PublicKey
 	conn    *websocket.Conn
 	send    chan []byte
 	rooms   []*Room
@@ -47,6 +49,11 @@ type Room struct {
 	lock    sync.RWMutex
 	uuid    uuid.UUID
 	clients []*Client
+}
+
+type ClientHello struct {
+	UUID      uuid.UUID
+	PublicKey ed25519.PublicKey
 }
 
 func NewManager() *Manager {
@@ -61,21 +68,31 @@ func NewManager() *Manager {
 	}
 }
 
-func (m *Manager) NewClient(conn *websocket.Conn) *Client {
-	c := &Client{
-		manager: m,
-		lock:    sync.RWMutex{},
-		uuid:    uuid.New(),
-		conn:    conn,
-		send:    make(chan []byte, 256),
-		rooms:   make([]*Room, 0),
-	}
-
+func (m *Manager) NewClient(
+	clientHello *ClientHello,
+	conn *websocket.Conn,
+) (*Client, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.clients[c.uuid] = c
-
-	return c
+	if c, ok := m.clients[clientHello.UUID]; ok {
+		if !c.key.Equal(clientHello.PublicKey) {
+			return nil, fmt.Errorf("client already exists")
+		} else {
+			return c, nil
+		}
+	} else {
+		c := &Client{
+			manager: m,
+			lock:    sync.RWMutex{},
+			uuid:    clientHello.UUID,
+			key:     clientHello.PublicKey,
+			conn:    conn,
+			send:    make(chan []byte, 256),
+			rooms:   make([]*Room, 0),
+		}
+		m.clients[clientHello.UUID] = c
+		return c, nil
+	}
 }
 
 func (m *Manager) GetRoom(uuid uuid.UUID) *Room {
@@ -146,7 +163,7 @@ func (c *Client) handleLeaveRoom(event *Event) {
 }
 
 func (c *Client) handleMessage(message []byte) error {
-	event, err := decodeEvent(message)
+	event, err := decodeEvent(c.key, message)
 	if err != nil {
 		return fmt.Errorf("failed to decode event: %w", err)
 	}
@@ -187,12 +204,16 @@ func (c *Client) read() {
 		}
 	}
 
-	c.conn.Close()
+	close(c.send)
 }
 
 func (c *Client) write() {
 	for {
 		message := <-c.send
+		if message == nil {
+			break
+		}
+
 		err := c.conn.WriteMessage(websocket.BinaryMessage, message)
 		if err != nil {
 			log.Error("Failed to write message: ", err)
@@ -215,11 +236,29 @@ func (m *Manager) socketHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Make sure we close the connection when the function returns
-	defer conn.Close()
+	// Read the client hello message
+	_, message, err := conn.ReadMessage()
+	if err != nil {
+		log.Error("Failed to read client hello message: ", err)
+		conn.Close()
+		return
+	}
+
+	// Decode the client hello message
+	clientHello, err := decodeClientHello(message)
+	if err != nil {
+		log.Error("Failed to decode client hello message: ", err)
+		conn.Close()
+		return
+	}
 
 	// Register our new client
-	client := m.NewClient(conn)
+	client, err := m.NewClient(clientHello, conn)
+	if err != nil {
+		log.Error("Failed to register client: ", err)
+		conn.Close()
+		return
+	}
 
 	// Start listening for messages from the client
 	go client.read()
@@ -228,37 +267,61 @@ func (m *Manager) socketHandler(w http.ResponseWriter, r *http.Request) {
 	go client.write()
 }
 
-func decodeEvent(message []byte) (*Event, error) {
-	// Make sure the message is at least 34 bytes
-	if len(message) < 34 {
-		return nil, fmt.Errorf("message is too short")
+func decodeClientHello(message []byte) (*ClientHello, error) {
+	// Make sure the message is 48 bytes
+	if len(message) != 48 {
+		return nil, fmt.Errorf("client hello message is not 48 bytes")
 	}
 
+	// Decode the UUID
+	uuid, err := uuid.FromBytes(message[:16])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode uuid: %w", err)
+	}
+
+	// Decode the public key
+	publicKey := message[16:48]
+
+	return &ClientHello{
+		UUID:      uuid,
+		PublicKey: publicKey,
+	}, nil
+}
+
+func decodeEvent(key ed25519.PublicKey, message []byte) (*Event, error) {
 	// Decode the sender
-	sender, err := uuid.FromBytes(message[:16])
+	sender, err := uuid.FromBytes(message[0:16])
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode sender: %w", err)
 	}
 
+	// Decode the signature
+	signature := message[16:80]
+
+	// Verify the signature
+	if !ed25519.Verify(key, message[80:], signature) {
+		return nil, fmt.Errorf("failed to verify signature")
+	}
+
 	// Decode the room
-	room, err := uuid.FromBytes(message[16:32])
+	room, err := uuid.FromBytes(message[80:96])
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode room: %w", err)
 	}
 
 	// Decode the event type length
-	eventTypeLength := binary.BigEndian.Uint16(message[32:34])
+	eventTypeLength := binary.BigEndian.Uint16(message[96:98])
 
-	// Make sure the message is at least 34 + eventTypeLength bytes
-	if len(message) < 34+int(eventTypeLength) {
+	// Make sure the message is at least 98 + eventTypeLength bytes
+	if len(message) < 98+int(eventTypeLength) {
 		return nil, fmt.Errorf("message is too short")
 	}
 
 	// Decode the event type
-	eventType := EventType(message[34 : 34+eventTypeLength])
+	eventType := EventType(message[98 : 98+eventTypeLength])
 
 	// Decode the payload
-	payload := message[34+eventTypeLength:]
+	payload := message[98+eventTypeLength:]
 
 	return &Event{
 		Sender:    sender,
