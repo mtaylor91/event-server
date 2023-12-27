@@ -254,6 +254,9 @@ func (m *Manager) healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) socketHandler(w http.ResponseWriter, r *http.Request) {
+	// Set the response headers
+	w.Header().Set("Cache-Control", "no-cache")
+
 	// Upgrade the connection to a websocket connection
 	conn, err := m.upgrader.Upgrade(w, r, nil)
 	if err != nil {
