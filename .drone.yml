@@ -30,7 +30,7 @@ steps:
   - git fetch origin $${DRONE_BRANCH}
   - export tag=$(get-release-tag)
   - cd deploy
-  - kustomize edit set image images.home.mtaylor.io/mtaylor.io:$${tag}
+  - kustomize edit set image images.home.mtaylor.io/event-server:$${tag}
   - cd ../
   - git commit -a -m v$${tag}
   - git tag $${tag}
