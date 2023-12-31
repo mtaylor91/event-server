@@ -75,16 +75,8 @@ func (m *Manager) NewClient(
 ) (*Client, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	if c, ok := m.clients[clientHello.UUID]; ok {
-		if !c.key.Equal(clientHello.PublicKey) {
-			return nil, fmt.Errorf("client already exists")
-		} else {
-			c.lock.Lock()
-			defer c.lock.Unlock()
-			c.conn = conn
-			c.send = make(chan []byte, 256)
-			return c, nil
-		}
+	if _, ok := m.clients[clientHello.UUID]; ok {
+		return nil, fmt.Errorf("client already exists")
 	} else {
 		c := &Client{
 			manager: m,
@@ -135,6 +127,8 @@ func (m *Manager) handleDisconnect(client *Client) {
 	if !ok {
 		return
 	}
+
+	delete(m.clients, client.uuid)
 
 	for _, room := range c.rooms {
 		room.lock.Lock()
