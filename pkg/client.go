@@ -66,13 +66,6 @@ func (c *Client) handleLeaveRoom(message *Message) {
 	}
 }
 
-func (c *Client) handlePublishToTopic(messageData []byte, message *Message) {
-	topic := c.manager.GetOrCreateTopic(message.Destination)
-	topic.lock.Lock()
-	defer topic.lock.Unlock()
-	topic.queue <- messageData
-}
-
 func (c *Client) handleSubscribeToTopic(message *Message) {
 	topic := c.manager.GetOrCreateTopic(message.Destination)
 	topic.lock.Lock()
@@ -126,8 +119,6 @@ func (c *Client) handleMessage(messageData []byte) error {
 		c.handleEnterRoom(message)
 	case EventTypeLeaveRoom:
 		c.handleLeaveRoom(message)
-	case EventTypePublishToTopic:
-		c.handlePublishToTopic(messageData, message)
 	case EventTypeSubscribeToTopic:
 		c.handleSubscribeToTopic(message)
 	case EventTypeUnsubscribeFromTopic:
