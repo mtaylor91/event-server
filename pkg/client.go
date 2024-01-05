@@ -124,6 +124,12 @@ func (c *Client) handleMessage(messageData []byte) error {
 	case EventTypeUnsubscribeFromTopic:
 		c.handleUnsubscribeFromTopic(message)
 	default:
+		log.WithFields(log.Fields{
+			"source":      message.Source,
+			"destination": message.Destination,
+			"event_type":  message.EventType,
+		}).Info("Received message")
+
 		// Broadcast the message to all clients in the room
 		room := c.manager.GetRoom(message.Destination)
 		if room != nil {
