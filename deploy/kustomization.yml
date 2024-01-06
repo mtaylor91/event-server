@@ -4,3 +4,8 @@ resources:
 - deployment.yml
 - service.yml
 - servicemonitor.yml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+images:
+- name: images.home.mtaylor.io/event-server
+  newTag: 0.0.12
