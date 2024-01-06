@@ -13,6 +13,7 @@ import (
 type Manager struct {
 	lock     sync.RWMutex
 	clients  map[uuid.UUID]*Client
+	sessions map[uuid.UUID]*Session
 	rooms    map[uuid.UUID]*Room
 	topics   map[uuid.UUID]*Topic
 	upgrader websocket.Upgrader
@@ -20,10 +21,11 @@ type Manager struct {
 
 func NewManager() *Manager {
 	return &Manager{
-		lock:    sync.RWMutex{},
-		clients: make(map[uuid.UUID]*Client),
-		rooms:   make(map[uuid.UUID]*Room),
-		topics:  make(map[uuid.UUID]*Topic),
+		lock:     sync.RWMutex{},
+		clients:  make(map[uuid.UUID]*Client),
+		sessions: make(map[uuid.UUID]*Session),
+		rooms:    make(map[uuid.UUID]*Room),
+		topics:   make(map[uuid.UUID]*Topic),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -32,29 +34,51 @@ func NewManager() *Manager {
 	}
 }
 
-func (m *Manager) NewClient(
-	clientHello *ClientHello,
+func (m *Manager) NewSession(
+	sessionHello *SessionHello,
 	conn *websocket.Conn,
-) (*Client, error) {
+) (*Session, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	EventServerClientsGauge.Inc()
-	if _, ok := m.clients[clientHello.UUID]; ok {
-		return nil, fmt.Errorf("client already exists")
-	} else {
-		c := &Client{
-			manager: m,
-			lock:    sync.RWMutex{},
-			uuid:    clientHello.UUID,
-			key:     clientHello.PublicKey,
-			conn:    conn,
-			send:    make(chan []byte, 256),
-			rooms:   make([]*Room, 0),
-			topics:  make([]*Topic, 0),
-		}
-		m.clients[clientHello.UUID] = c
-		return c, nil
+
+	if _, ok := m.sessions[sessionHello.SessionUUID]; ok {
+		return nil, fmt.Errorf("session already exists")
 	}
+
+	c, ok := m.clients[sessionHello.ClientUUID]
+	if !ok {
+		c = &Client{
+			manager:  m,
+			lock:     sync.RWMutex{},
+			uuid:     sessionHello.ClientUUID,
+			key:      sessionHello.ClientPublicKey,
+			sessions: make([]*Session, 0),
+		}
+
+		m.clients[sessionHello.ClientUUID] = c
+
+		EventServerClientsGauge.Inc()
+	}
+
+	s := &Session{
+		manager: m,
+		client:  c,
+		lock:    sync.RWMutex{},
+		uuid:    sessionHello.SessionUUID,
+		conn:    conn,
+		send:    make(chan []byte, 256),
+		rooms:   make([]*Room, 0),
+		topics:  make([]*Topic, 0),
+	}
+
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.sessions = append(c.sessions, s)
+	m.sessions[s.uuid] = s
+
+	EventServerSessionsGauge.Inc()
+
+	return s, nil
 }
 
 func (m *Manager) GetRoom(uuid uuid.UUID) *Room {
@@ -73,10 +97,10 @@ func (m *Manager) GetOrCreateRoom(uuid uuid.UUID) *Room {
 	}
 
 	room := &Room{
-		manager: m,
-		lock:    sync.RWMutex{},
-		uuid:    uuid,
-		clients: make([]*Client, 0),
+		manager:  m,
+		lock:     sync.RWMutex{},
+		uuid:     uuid,
+		sessions: make([]*Session, 0),
 	}
 
 	m.rooms[uuid] = room
@@ -111,30 +135,30 @@ func (m *Manager) GetOrCreateTopic(uuid uuid.UUID) *Topic {
 	return topic
 }
 
-func (m *Manager) DeleteClient(client *Client) {
+func (m *Manager) DeleteSession(session *Session) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	c, ok := m.clients[client.uuid]
+	s, ok := m.sessions[session.uuid]
 	if !ok {
 		return
 	}
 
-	delete(m.clients, client.uuid)
+	delete(m.sessions, session.uuid)
 
-	for _, room := range c.rooms {
+	for _, room := range s.rooms {
 		room.lock.Lock()
-		for i, client := range room.clients {
-			if client.uuid == c.uuid {
-				room.clients = append(
-					room.clients[:i], room.clients[i+1:]...)
+		for i, session := range room.sessions {
+			if session.uuid == s.uuid {
+				room.sessions = append(
+					room.sessions[:i], room.sessions[i+1:]...)
 				break
 			}
 		}
 		room.lock.Unlock()
 	}
 
-	for _, topic := range c.topics {
+	for _, topic := range s.topics {
 		topic.lock.Lock()
 		topic.consumer = nil
 		close(topic.queue)
@@ -142,7 +166,23 @@ func (m *Manager) DeleteClient(client *Client) {
 		topic.lock.Unlock()
 	}
 
-	EventServerClientsGauge.Dec()
+	EventServerSessionsGauge.Dec()
+
+	// Remove the session from the client
+	s.client.lock.Lock()
+	defer s.client.lock.Unlock()
+	for i, session := range s.client.sessions {
+		if session.uuid == s.uuid {
+			s.client.sessions = append(
+				s.client.sessions[:i], s.client.sessions[i+1:]...)
+			break
+		}
+	}
+
+	if len(s.client.sessions) == 0 {
+		delete(m.clients, s.client.uuid)
+		EventServerClientsGauge.Dec()
+	}
 }
 
 func (m *Manager) HealthHandler(w http.ResponseWriter, r *http.Request) {
@@ -161,36 +201,48 @@ func (m *Manager) SocketHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read the client hello message
+	defer conn.Close()
+
+	// Read the session hello message
 	_, message, err := conn.ReadMessage()
 	if err != nil {
-		log.Error("Failed to read client hello message: ", err)
+		log.Error("Failed to read session hello message: ", err)
 		conn.Close()
 		return
 	}
 
-	// Decode the client hello message
-	clientHello, err := decodeClientHello(message)
+	// Decode the session hello message
+	sessionHello, err := decodeSessionHello(message)
 	if err != nil {
-		log.Error("Failed to decode client hello message: ", err)
+		log.Error("Failed to decode session hello message: ", err)
 		conn.Close()
 		return
 	}
 
-	// Register our new client
-	client, err := m.NewClient(clientHello, conn)
+	// Register our new session
+	session, err := m.NewSession(sessionHello, conn)
 	if err != nil {
-		log.Error("Failed to register client: ", err)
+		log.Error("Failed to register session: ", err)
 		conn.Close()
 		return
 	}
 
-	// Log that we have a new client
-	log.Info("New client: ", client.uuid)
+	defer m.DeleteSession(session)
 
-	// Start listening for messages from the client
-	go client.read()
+	logFields := log.Fields{
+		"client":  session.client.uuid,
+		"session": session.uuid,
+	}
 
-	// Start listening for messages from the manager
-	go client.write()
+	// Log that we have a new session
+	log.WithFields(logFields).Info("New session")
+
+	// Start reading messages from the connection
+	go session.read()
+
+	// Write messages to the connection
+	session.write()
+
+	// Log that we have a closed session
+	log.WithFields(logFields).Info("Closed session")
 }

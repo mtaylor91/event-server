@@ -5,7 +5,12 @@ import "github.com/prometheus/client_golang/prometheus"
 var (
 	EventServerClientsGauge = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "events_server_clients",
-		Help: "A gauge of clients connected to the events server.",
+		Help: "A gauge of events server clients.",
+	})
+
+	EventServerSessionsGauge = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "events_server_sessions",
+		Help: "A gauge of events server sessions.",
 	})
 
 	EventServerInFlightGauge = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -22,6 +27,7 @@ var (
 func init() {
 	prometheus.MustRegister(
 		EventServerClientsGauge,
+		EventServerSessionsGauge,
 		EventServerInFlightGauge,
 		EventServerRequestsCounter,
 	)

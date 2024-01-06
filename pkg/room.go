@@ -7,8 +7,8 @@ import (
 )
 
 type Room struct {
-	manager *Manager
-	lock    sync.RWMutex
-	uuid    uuid.UUID
-	clients []*Client
+	manager  *Manager
+	lock     sync.RWMutex
+	uuid     uuid.UUID
+	sessions []*Session
 }
