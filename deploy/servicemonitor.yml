@@ -1,0 +1,11 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: event-server
+spec:
+  selector:
+    matchLabels:
+      app: event-server
+  endpoints:
+  - port: http-monitoring
+    interval: 15s

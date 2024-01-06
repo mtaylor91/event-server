@@ -3,3 +3,4 @@ commonLabels:
 resources:
 - deployment.yml
 - service.yml
+- servicemonitor.yml
