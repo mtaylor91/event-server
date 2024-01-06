@@ -22,8 +22,10 @@ func main() {
 	eventsRouter.HandleFunc("/api/v1/socket", manager.SocketHandler)
 
 	eventsServer := &http.Server{
-		Addr:    ":8080",
-		Handler: eventsRouter,
+		Addr: ":8080",
+		Handler: promhttp.InstrumentHandlerInFlight(pkg.EventServerInFlightGauge,
+			promhttp.InstrumentHandlerCounter(pkg.EventServerRequestsCounter,
+				eventsRouter)),
 	}
 
 	metricsRouter := mux.NewRouter()

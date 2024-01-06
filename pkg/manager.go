@@ -38,6 +38,7 @@ func (m *Manager) NewClient(
 ) (*Client, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
+	EventServerClientsGauge.Inc()
 	if _, ok := m.clients[clientHello.UUID]; ok {
 		return nil, fmt.Errorf("client already exists")
 	} else {
@@ -140,6 +141,8 @@ func (m *Manager) DeleteClient(client *Client) {
 		topic.queue = make(chan []byte, 256)
 		topic.lock.Unlock()
 	}
+
+	EventServerClientsGauge.Dec()
 }
 
 func (m *Manager) HealthHandler(w http.ResponseWriter, r *http.Request) {
@@ -148,8 +151,6 @@ func (m *Manager) HealthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) SocketHandler(w http.ResponseWriter, r *http.Request) {
-	log.Info("New connection")
-
 	// Set the response headers
 	w.Header().Set("Cache-Control", "no-cache")
 
@@ -159,8 +160,6 @@ func (m *Manager) SocketHandler(w http.ResponseWriter, r *http.Request) {
 		log.Error("Failed to upgrade connection: ", err)
 		return
 	}
-
-	log.Info("Upgraded connection")
 
 	// Read the client hello message
 	_, message, err := conn.ReadMessage()
